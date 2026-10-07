@@ -1,0 +1,135 @@
+name: clock
+on:
+  schedule:
+    - cron: '2-57/5 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: clock
+  cancel-in-progress: false
+permissions: {}
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: tick
+        env:
+          PAT: ${{ secrets.CLOCK_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 -u - <<'PY'
+          import os, re, json, base64, calendar, urllib.request, urllib.error, datetime as dt
+          from zoneinfo import ZoneInfo
+
+          PAT = os.environ["PAT"]
+          REPO = os.environ["REPO"]
+          TASKS = "ins-labs/ins-clock-tasks"
+          ASSIGNEE = "ins-sherbeeny"
+          CAI = ZoneInfo("Africa/Cairo")
+          UTC = dt.timezone.utc
+          NAME = re.compile(r"^T(\d{8})_(\d{4})__(ONCE|P(\d+)(MI|H|D|W|MO)(L?))__([A-Z0-9]+)(?:__U(\d{8}))?$")
+
+
+          def api(method, path, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              req = urllib.request.Request(
+                  "https://api.github.com" + path, method=method, data=data,
+                  headers={"Authorization": "Bearer " + PAT, "Accept": "application/vnd.github+json",
+                           "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      t = r.read()
+                      return r.status, (json.loads(t) if t else None)
+              except urllib.error.HTTPError as e:
+                  return e.code, None
+
+
+          def add_months(t, n):
+              m = t.month - 1 + n
+              y = t.year + m // 12
+              m = m % 12 + 1
+              d = min(t.day, calendar.monthrange(y, m)[1])
+              return t.replace(year=y, month=m, day=d)
+
+
+          def advance(due, n, unit, local):
+              t = due.astimezone(CAI).replace(tzinfo=None) if local else due
+              if unit == "MO":
+                  t = add_months(t, n)
+              else:
+                  t = t + {"MI": dt.timedelta(minutes=n), "H": dt.timedelta(hours=n),
+                           "D": dt.timedelta(days=n), "W": dt.timedelta(weeks=n)}[unit]
+              if local:
+                  t = t.replace(tzinfo=CAI).astimezone(UTC)
+              return t
+
+
+          def fmt(t):
+              return "T%s_%s" % (t.strftime("%Y%m%d"), t.strftime("%H%M"))
+
+
+          now = dt.datetime.now(UTC)
+          variables, page = [], 1
+          while True:
+              st, d = api("GET", "/repos/%s/actions/variables?per_page=30&page=%d" % (REPO, page))
+              if st != 200:
+                  print("list failed", st)
+                  raise SystemExit(1)
+              variables += d["variables"]
+              if len(variables) >= d["total_count"] or not d["variables"]:
+                  break
+              page += 1
+
+          due, skipped = [], 0
+          for v in variables:
+              m = NAME.match(v["name"])
+              if not m:
+                  skipped += 1
+                  continue
+              t = dt.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M").replace(tzinfo=UTC)
+              if t <= now:
+                  due.append((t, v, m))
+          print("variables=%d due=%d unparsed=%d" % (len(variables), len(due), skipped))
+
+          if due:
+              st, iss = api("GET", "/repos/%s/issues?state=all&per_page=100" % TASKS)
+              seen = {i["title"] for i in iss} if st == 200 and iss else set()
+              for t, v, m in sorted(due, key=lambda x: x[0]):
+                  name = v["name"]
+                  nxt = None
+                  if m.group(3) != "ONCE":
+                      n, unit, local = int(m.group(4)), m.group(5), m.group(6) == "L"
+                      nxt = advance(t, n, unit, local)
+                      while nxt <= now:
+                          nxt = advance(nxt, n, unit, local)
+                      if m.group(8) and nxt.strftime("%Y%m%d") > m.group(8):
+                          nxt = None
+                  footer = "\n\n---\nclock: due %s UTC; next %s" % (
+                      t.strftime("%Y-%m-%d %H:%M"), nxt.strftime("%Y-%m-%d %H:%M UTC") if nxt else "none (retired)")
+                  if name not in seen:
+                      st, _ = api("POST", "/repos/%s/issues" % TASKS,
+                                  {"title": name, "body": v["value"] + footer, "assignees": [ASSIGNEE]})
+                      if st != 201:
+                          print("issue create failed", st)
+                          continue
+                  if nxt:
+                      rec = m.group(3)
+                      newname = "%s__%s__%s" % (fmt(nxt), rec, m.group(7)) + ("__U" + m.group(8) if m.group(8) else "")
+                      st, _ = api("PATCH", "/repos/%s/actions/variables/%s" % (REPO, name), {"name": newname})
+                      print("advanced", st)
+                  else:
+                      st, _ = api("DELETE", "/repos/%s/actions/variables/%s" % (REPO, name))
+                      print("retired", st)
+
+          if now.hour == 3 and now.minute < 10:
+              path = "/repos/%s/contents/heartbeat.txt" % REPO
+              today = now.strftime("%Y-%m-%d") + "\n"
+              st, cur = api("GET", path)
+              same = st == 200 and base64.b64decode(cur["content"]).decode() == today
+              if not same:
+                  body = {"message": "heartbeat", "content": base64.b64encode(today.encode()).decode()}
+                  if st == 200:
+                      body["sha"] = cur["sha"]
+                  st, _ = api("PUT", path, body)
+                  print("heartbeat", st)
+          PY
