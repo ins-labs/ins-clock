@@ -30,7 +30,7 @@ jobs:
           ok = True
           CAI = ZoneInfo("Africa/Cairo")
           UTC = dt.timezone.utc
-          NAME = re.compile(r"^T(\d{8})_(\d{4})__(ONCE|P(\d+)(MI|H|D|W|MO)(L?))__([A-Z0-9]+)(?:__U(\d{8}))?$")
+          NAME = re.compile(r"^T(\d{8})_(\d{4})__(ONCE|P(\d+)(MI|H|D|W|MO)(L?))__([0-9]{6}_[A-Z0-9]+|[A-Z0-9]+)(?:__U(\d{8}))?$")
 
 
           def api(method, path, body=None):
@@ -95,8 +95,16 @@ jobs:
           print("variables=%d due=%d unparsed=%d" % (len(variables), len(due), skipped))
 
           if due:
-              st, iss = api("GET", "/repos/%s/issues?state=all&per_page=100" % TASKS)
-              seen = {i["title"] for i in iss} if st == 200 and iss else set()
+              seen, page = set(), 1
+              while True:
+                  st, iss = api("GET", "/repos/%s/issues?state=all&per_page=100&page=%d" % (TASKS, page))
+                  if st != 200:
+                      print("issue list failed", st)
+                      raise SystemExit(1)
+                  seen.update(i["title"] for i in iss)
+                  if len(iss) < 100:
+                      break
+                  page += 1
               for t, v, m in sorted(due, key=lambda x: x[0]):
                   name = v["name"]
                   nxt = None
