@@ -12,7 +12,7 @@ Name (UPPERCASE, GitHub forces uppercase and forbids a leading digit or hyphens)
 
 - `T<YYYYMMDD>_<HHMM>`: next due time, always UTC.
 - `<REC>`: `ONCE` or `P<n><unit>`, with unit `MI` (minutes), `H`, `D`, `W`, `MO` (months). A trailing `L` means the step is added in Africa/Cairo wall-clock time (keeps 00:00/06:00 local across DST); without `L` the step is added in UTC.
-- `<ID>`: short unique token, letters and digits only (no underscore).
+- `<ID>`: zero-padded immutable serial + underscore + uppercase short code (for example `000001_RENEW`). Serial allocation and recovery documentation live in the private task repo.
 - `__U<YYYYMMDD>` (optional): last UTC date; the obligation is retired when the next occurrence would pass it.
 
 Examples:
@@ -31,3 +31,8 @@ Value = the obligation body (what to do, plus references). Values are not public
 4. Daily around 03:00 UTC: update `heartbeat.txt` so GitHub does not disable the schedule after 60 days of inactivity.
 
 Auth: the Actions secret `CLOCK_PAT` (fine-grained PAT limited to these two repos). The default token cannot write Variables.
+
+
+## Registry backup
+
+Each registered obligation has a permanent serial. A separate D1 table holds latest details and references; the private task repo holds `registry.json`. The workflow reconciles current variables after each successful tick and commits a changed backup. Failed registry writes fail the run and are retried by the next tick. Only the D1-token secret is used, never logged.
