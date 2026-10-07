@@ -16,6 +16,7 @@ jobs:
         env:
           PAT: ${{ secrets.CLOCK_PAT }}
           REPO: ${{ github.repository }}
+          HC_URL: ${{ secrets.HC_PING_URL }}
         run: |
           python3 -u - <<'PY'
           import os, re, json, base64, calendar, urllib.request, urllib.error, datetime as dt
@@ -25,6 +26,8 @@ jobs:
           REPO = os.environ["REPO"]
           TASKS = "ins-labs/ins-clock-tasks"
           ASSIGNEE = "ins-sherbeeny"
+          HC = os.environ.get("HC_URL", "")
+          ok = True
           CAI = ZoneInfo("Africa/Cairo")
           UTC = dt.timezone.utc
           NAME = re.compile(r"^T(\d{8})_(\d{4})__(ONCE|P(\d+)(MI|H|D|W|MO)(L?))__([A-Z0-9]+)(?:__U(\d{8}))?$")
@@ -111,15 +114,18 @@ jobs:
                                   {"title": name, "body": v["value"] + footer, "assignees": [ASSIGNEE]})
                       if st != 201:
                           print("issue create failed", st)
+                          ok = False
                           continue
                   if nxt:
                       rec = m.group(3)
                       newname = "%s__%s__%s" % (fmt(nxt), rec, m.group(7)) + ("__U" + m.group(8) if m.group(8) else "")
                       st, _ = api("PATCH", "/repos/%s/actions/variables/%s" % (REPO, name), {"name": newname})
                       print("advanced", st)
+                      ok = ok and st == 200
                   else:
                       st, _ = api("DELETE", "/repos/%s/actions/variables/%s" % (REPO, name))
                       print("retired", st)
+                      ok = ok and st == 204
 
           if now.hour == 3 and now.minute < 10:
               path = "/repos/%s/contents/heartbeat.txt" % REPO
@@ -132,4 +138,26 @@ jobs:
                       body["sha"] = cur["sha"]
                   st, _ = api("PUT", path, body)
                   print("heartbeat", st)
+
+          if not ok:
+              raise SystemExit(1)
+
+          # hourly dead-man ping: once per UTC hour, only after a fully successful run
+          hour = now.strftime("%Y%m%d%H")
+          last = next((v for v in variables if v["name"] == "LASTPING"), None)
+          if (last["value"] if last else "") != hour and HC:
+              try:
+                  urllib.request.urlopen(urllib.request.Request(HC, method="GET"), timeout=20).read()
+                  if last:
+                      api("PATCH", "/repos/%s/actions/variables/LASTPING" % REPO, {"name": "LASTPING", "value": hour})
+                  else:
+                      api("POST", "/repos/%s/actions/variables" % REPO, {"name": "LASTPING", "value": hour})
+                  print("pinged")
+              except Exception:
+                  print("ping failed")
           PY
+      - name: report failure
+        if: failure()
+        env:
+          HC_URL: ${{ secrets.HC_PING_URL }}
+        run: curl -fsS -m 20 "$HC_URL/fail" >/dev/null || true
