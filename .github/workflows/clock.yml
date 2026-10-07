@@ -130,7 +130,7 @@ jobs:
                       newname = "%s__%s__%s" % (fmt(nxt), rec, m.group(7)) + ("__U" + m.group(8) if m.group(8) else "")
                       st, _ = api("PATCH", "/repos/%s/actions/variables/%s" % (REPO, name), {"name": newname})
                       print("advanced", st)
-                      ok = ok and st == 200
+                      ok = ok and st == 204
                   else:
                       st, _ = api("DELETE", "/repos/%s/actions/variables/%s" % (REPO, name))
                       print("retired", st)
