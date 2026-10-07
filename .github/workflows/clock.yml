@@ -15,6 +15,7 @@ jobs:
       - name: tick
         env:
           PAT: ${{ secrets.CLOCK_PAT }}
+          ISSUES_PAT: ${{ secrets.CLOCK_ISSUES_PAT }}
           REPO: ${{ github.repository }}
           HC_URL: ${{ secrets.HC_PING_URL }}
           D1_TOKEN: ${{ secrets.CLOCK_D1_TOKEN }}
@@ -38,7 +39,7 @@ jobs:
               data = json.dumps(body).encode() if body is not None else None
               req = urllib.request.Request(
                   "https://api.github.com" + path, method=method, data=data,
-                  headers={"Authorization": "Bearer " + PAT, "Accept": "application/vnd.github+json",
+                  headers={"Authorization": "Bearer " + (os.environ["ISSUES_PAT"] if path.startswith("/repos/" + TASKS + "/issues") else PAT), "Accept": "application/vnd.github+json",
                            "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
               try:
                   with urllib.request.urlopen(req, timeout=30) as r:
