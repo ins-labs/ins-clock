@@ -1,0 +1,7 @@
+{
+  "name": "ins-clock-trigger",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-07",
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "observability": { "enabled": true }
+}
