@@ -17,6 +17,7 @@ jobs:
           PAT: ${{ secrets.CLOCK_PAT }}
           REPO: ${{ github.repository }}
           HC_URL: ${{ secrets.HC_PING_URL }}
+          D1_TOKEN: ${{ secrets.CLOCK_D1_TOKEN }}
         run: |
           python3 -u - <<'PY'
           import os, re, json, base64, calendar, urllib.request, urllib.error, datetime as dt
@@ -148,6 +149,74 @@ jobs:
                   print("heartbeat", st)
 
           if not ok:
+              raise SystemExit(1)
+
+          # Reconcile live variables to D1, then regenerate the private recovery backup.
+          # A failed write is retried on the next tick, including if no obligation is due.
+          D1_URL = "https://api.cloudflare.com/client/v4/accounts/428e781a7f0a318bb08a14152d0a668e/d1/database/169c9e20-d1bd-4b39-9ac2-cb63610d7745/query"
+          def d1(sql, params=None):
+              req = urllib.request.Request(D1_URL, data=json.dumps({"sql": sql, "params": params or []}).encode(),
+                  headers={"Authorization": "Bearer " + os.environ["D1_TOKEN"], "Content-Type": "application/json"})
+              result = json.load(urllib.request.urlopen(req, timeout=30))
+              if not result.get("success") or any(not x.get("success") for x in result["result"]):
+                  raise RuntimeError("D1 query failed")
+              return result["result"][0].get("results", [])
+          try:
+              rows = d1("SELECT * FROM clock_obligations ORDER BY serial")
+              current, page = {}, 1
+              while True:
+                  st, data = api("GET", "/repos/%s/actions/variables?per_page=30&page=%d" % (REPO, page))
+                  if st != 200:
+                      raise RuntimeError("variable reload failed")
+                  for v in data["variables"]:
+                      m = NAME.match(v["name"])
+                      if m and "_" in m.group(7):
+                          serial, code = m.group(7).split("_", 1)
+                          if serial in current:
+                              raise RuntimeError("duplicate serial")
+                          current[serial] = (v, m, code)
+                  if page * 30 >= data["total_count"]:
+                      break
+                  page += 1
+              if set(current) - {r["id"] for r in rows}:
+                  raise RuntimeError("unregistered serial")
+              changed_at = now.isoformat().replace("+00:00", "Z")
+              for r in rows:
+                  if r["id"] in current:
+                      v, m, code = current[r["id"]]
+                      if r["status"] == "cancelled":
+                          raise RuntimeError("cancelled variable still present")
+                      due_at = dt.datetime.strptime(m.group(1)+m.group(2), "%Y%m%d%H%M").isoformat()+"Z"
+                      values = [code, v["value"], "active", v["name"], due_at, m.group(3), m.group(8)]
+                  elif r["status"] == "active":
+                      values = [r["code"], r["details"], "retired", None, None, r["recurrence"], r["until_date"]]
+                  else:
+                      continue
+                  keys = ["code", "details", "status", "variable_name", "due_at", "recurrence", "until_date"]
+                  if values != [r[k] for k in keys]:
+                      d1("UPDATE clock_obligations SET code=?,details=?,status=?,variable_name=?,due_at=?,recurrence=?,until_date=?,updated_at=? WHERE id=?", values+[changed_at,r["id"]])
+              rows = d1("SELECT * FROM clock_obligations ORDER BY serial")
+              obligations = []
+              for r in rows:
+                  r["references"] = json.loads(r.pop("references_json"))
+                  obligations.append(r)
+              path = "/repos/%s/contents/registry.json" % TASKS
+              st, old = api("GET", path)
+              if st not in (200,404):
+                  raise RuntimeError("backup read failed")
+              prior = json.loads(base64.b64decode(old["content"])) if st == 200 else {}
+              if prior.get("obligations") != obligations:
+                  export = {"schema_version":1,"generated_at":changed_at,"obligations":obligations}
+                  payload = {"message":"Update obligation registry backup", "content":base64.b64encode(json.dumps(export,ensure_ascii=False,indent=2).encode()).decode()}
+                  if st == 200:
+                      payload["sha"] = old["sha"]
+                  st, _ = api("PUT",path,payload)
+                  if st not in (200,201):
+                      raise RuntimeError("backup write failed")
+                  print("registry backup updated")
+              print("registry verified")
+          except Exception:
+              print("registry sync failed")
               raise SystemExit(1)
 
           # hourly dead-man ping: once per UTC hour, only after a fully successful run
