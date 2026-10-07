@@ -12,9 +12,44 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: 428e781a7f0a318bb08a14152d0a668e
-          workingDirectory: trigger
-          command: deploy --keep-vars
+      - name: Deploy only the existing Worker and cron
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request, urllib.error, uuid
+          base = 'https://api.cloudflare.com/client/v4/accounts/428e781a7f0a318bb08a14152d0a668e/workers/scripts/ins-clock-trigger'
+          def request(method, suffix='', data=None, content_type='application/json'):
+              req = urllib.request.Request(base + suffix, data=data, method=method, headers={'Authorization': 'Bearer ' + os.environ['CLOUDFLARE_API_TOKEN'], 'Content-Type': content_type})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as response:
+                      body = json.load(response)
+                      status = response.status
+              except urllib.error.HTTPError as error:
+                  try: codes = [x.get('code') for x in json.load(error).get('errors', [])]
+                  except Exception: codes = []
+                  raise SystemExit(f'{method} {suffix or "/script"}: HTTP {error.code}, error codes {codes}')
+              print(f'{method} {suffix or "/script"}: HTTP {status}, success {body.get("success")}')
+              if not body.get('success'): raise SystemExit('Cloudflare API returned unsuccessful response')
+              return body.get('result')
+          secrets = request('GET', '/secrets')
+          if not any(x.get('name') == 'GITHUB_TOKEN' and x.get('type') == 'secret_text' for x in secrets):
+              raise SystemExit('Required encrypted dispatch secret missing')
+          metadata = {'main_module': 'worker.js', 'compatibility_date': '2026-10-07', 'keep_bindings': ['secret_text'], 'observability': {'enabled': True}}
+          boundary = 'clock-' + uuid.uuid4().hex
+          parts = []
+          for name, filename, kind, payload in [('metadata', None, 'application/json', json.dumps(metadata).encode()), ('worker.js', 'worker.js', 'application/javascript+module', pathlib.Path('trigger/worker.js').read_bytes())]:
+              disposition = f'Content-Disposition: form-data; name="{name}"'
+              if filename: disposition += f'; filename="{filename}"'
+              parts.append(f'--{boundary}\r\n{disposition}\r\nContent-Type: {kind}\r\n\r\n'.encode() + payload + b'\r\n')
+          upload = b''.join(parts) + f'--{boundary}--\r\n'.encode()
+          request('PUT', data=upload, content_type='multipart/form-data; boundary=' + boundary)
+          request('PUT', '/schedules', json.dumps([{'cron': '*/5 * * * *'}]).encode())
+          schedules = request('GET', '/schedules')
+          if [x['cron'] for x in schedules['schedules']] != ['*/5 * * * *']:
+              raise SystemExit('Cron readback mismatch')
+          secrets = request('GET', '/secrets')
+          if not any(x.get('name') == 'GITHUB_TOKEN' and x.get('type') == 'secret_text' for x in secrets):
+              raise SystemExit('Encrypted dispatch secret not retained')
+          print('Worker code uploaded; five-minute cron and encrypted secret verified.')
+          PY
