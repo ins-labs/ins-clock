@@ -1,0 +1,52 @@
+name: Clock notification test
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [create, close]
+        default: create
+        required: true
+permissions: {}
+concurrency:
+  group: clock-notification-test
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Approved notification test
+        env:
+          PAT: ${{ secrets.CLOCK_ISSUES_PAT }}
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          base = 'https://api.github.com/repos/ins-labs/ins-clock-tasks/issues'
+          title = 'Clock notification test'
+          body = "Test of the clock's separate issue actor and email delivery to Ins. No task is due. Close this issue after the GitHub email is verified."
+          def request(method, suffix='', data=None):
+              req = urllib.request.Request(base + suffix, method=method, data=json.dumps(data).encode() if data is not None else None, headers={'Authorization': 'Bearer ' + os.environ['PAT'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10', 'Content-Type': 'application/json'})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response: return json.load(response)
+              except urllib.error.HTTPError as error: raise SystemExit(f'{method} issue operation failed: HTTP {error.code}')
+          matches = []
+          page = 1
+          while True:
+              rows = request('GET', f'?state=all&per_page=100&page={page}')
+              matches += [i for i in rows if i['title'] == title and i['user']['login'] == 'sherbeenyv']
+              if len(rows) < 100: break
+              page += 1
+          if len(matches) > 1: raise SystemExit('Multiple test issues found; stop before changes')
+          if os.environ['OPERATION'] == 'create':
+              issue = matches[0] if matches else request('POST', data={'title': title, 'body': body, 'assignees': ['ins-sherbeeny']})
+              if issue['user']['login'] != 'sherbeenyv' or issue['body'] != body or [a['login'] for a in issue['assignees']] != ['ins-sherbeeny']:
+                  raise SystemExit('Test issue actor, words or assignee mismatch')
+              print('Test issue verified:', issue['html_url'])
+          else:
+              if len(matches) != 1: raise SystemExit('No unique test issue to close')
+              issue = request('PATCH', '/' + str(matches[0]['number']), {'state': 'closed'})
+              if issue['state'] != 'closed': raise SystemExit('Close readback mismatch')
+              print('Test issue closed:', issue['html_url'])
+          PY
