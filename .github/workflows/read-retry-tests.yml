@@ -1,0 +1,15 @@
+name: clock read retry tests
+on:
+  push:
+    branches: ['fix/clock-read-retry-20261014-1434']
+  pull_request:
+permissions: {}
+jobs:
+  synthetic-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 -m unittest discover -s tests/tests -v
