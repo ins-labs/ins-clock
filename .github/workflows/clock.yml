@@ -211,13 +211,15 @@ jobs:
                   r["references"] = json.loads(r.pop("references_json"))
                   obligations.append(r)
               path = "/repos/%s/contents/registry.json" % TASKS
-              st, old = api("GET", path)
+              # Backup lives on its own branch: main is PR-only (main-guard force-resets direct pushes).
+              BACKUP_BRANCH = "registry-backup"
+              st, old = api("GET", path + "?ref=" + BACKUP_BRANCH)
               if st not in (200,404):
                   raise RuntimeError("backup read failed")
               prior = json.loads(base64.b64decode(old["content"])) if st == 200 else {}
               if prior.get("obligations") != obligations:
                   export = {"schema_version":1,"generated_at":changed_at,"obligations":obligations}
-                  payload = {"message":"Update obligation registry backup", "content":base64.b64encode(json.dumps(export,ensure_ascii=False,indent=2).encode()).decode()}
+                  payload = {"message":"Update obligation registry backup", "branch":BACKUP_BRANCH, "content":base64.b64encode(json.dumps(export,ensure_ascii=False,indent=2).encode()).decode()}
                   if st == 200:
                       payload["sha"] = old["sha"]
                   st, _ = api("PUT",path,payload)
