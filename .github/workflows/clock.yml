@@ -94,6 +94,24 @@ jobs:
                   break
               page += 1
 
+          # Owner labels per ins-infra registry/agents.yaml (owns_ids notes).
+          # Unknown codes stay unlabeled on purpose: R17 V1 flags them within
+          # minutes - no invented default owner (Dina FINAL 09:22).
+          CODE_LABELS = {"ELEC": "agent:karim", "BONSCOUT": "agent:kinor"}
+
+
+          def issue_payload(name, t, nxt, value, serial_code):
+              """Build the task-issue payload (#4). Body leads with the R17
+              "Due: <Cairo date>" line; owner label comes from CODE_LABELS."""
+              code = serial_code.rsplit("_", 1)[-1]
+              footer = "\n\n---\nclock: due %s UTC; next %s" % (
+                  t.strftime("%Y-%m-%d %H:%M"), nxt.strftime("%Y-%m-%d %H:%M UTC") if nxt else "none (retired)")
+              return {"title": name,
+                      "body": "Due: %s\n" % t.astimezone(CAI).strftime("%Y-%m-%d") + value + footer,
+                      "assignees": [ASSIGNEE],
+                      "labels": [CODE_LABELS[code]] if code in CODE_LABELS else []}
+
+
           due, skipped = [], 0
           for v in variables:
               m = NAME.match(v["name"])
@@ -126,11 +144,9 @@ jobs:
                           nxt = advance(nxt, n, unit, local)
                       if m.group(8) and nxt.strftime("%Y%m%d") > m.group(8):
                           nxt = None
-                  footer = "\n\n---\nclock: due %s UTC; next %s" % (
-                      t.strftime("%Y-%m-%d %H:%M"), nxt.strftime("%Y-%m-%d %H:%M UTC") if nxt else "none (retired)")
                   if name not in seen:
                       st, _ = api("POST", "/repos/%s/issues" % TASKS,
-                                  {"title": name, "body": v["value"] + footer, "assignees": [ASSIGNEE]})
+                                  issue_payload(name, t, nxt, v["value"], m.group(7)))
                       if st != 201:
                           print("issue create failed", st)
                           ok = False
