@@ -36,6 +36,10 @@ class IssuePayloadTests(unittest.TestCase):
         t = dt.datetime(2026, 10, 20, 3, 0, tzinfo=dt.timezone.utc)
         self.assertEqual(self.build(t, None, 'ELEC')['labels'], ['agent:karim'])
 
+    def test_bonscout_labeled_kinor(self):
+        t = dt.datetime(2026, 10, 20, 7, 0, tzinfo=dt.timezone.utc)
+        self.assertEqual(self.build(t, None, 'BONSCOUT')['labels'], ['agent:kinor'])
+
     def test_unknown_code_unlabeled(self):
         t = dt.datetime(2026, 10, 20, 3, 0, tzinfo=dt.timezone.utc)
         self.assertEqual(self.build(t, None, 'SOMETHING')['labels'], [])
