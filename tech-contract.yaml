@@ -1,0 +1,13 @@
+# Repo tech contract: ins-clock (v1, agent:ammar, 2026-10-21)
+# One file per repo (rollout ins-infra#512). Change = issue + PR + stamps.
+repo: ins-labs/ins-clock
+visibility: "PUBLIC on purpose - workflow + README only, no data, no secrets; logs are public so the workflow prints COUNTS only, never names or values"
+purpose: "server-independent obligations clock: a workflow wakes every 5 minutes (cron 2-57/5), reads this repo's Actions variables, turns due ones into issues in the PRIVATE ins-clock-tasks repo"
+variable_format: "T<YYYYMMDD>_<HHMM>__<REC>__<ID>[__U<YYYYMMDD>] - due time UTC; REC = ONCE or P<n><MI|H|D|W|MO> with trailing L meaning Africa/Cairo wall-clock steps; ID = zero-padded serial + short code; optional U until-date retires the obligation"
+runtime: "Python inline in the workflow (urllib), plus trigger/worker.js Cloudflare Worker + wrangler.jsonc (deploy-trigger.yml deploys ONLY the existing Worker and cron)"
+ci:
+  workflows: "clock.yml (5-min cron, 5min timeout), deploy-trigger.yml, notification-test.yml, read-retry-tests.yml"
+  runs_on: "HOSTED ubuntu-latest - ALLOWED: repo is public (11:56 rule covers private repos only)"
+  hardening: "deploy-trigger.yml uses actions/checkout@v6 TAG - tracked in ins-infra#513 (fix text posted there); read-retry-tests.yml is SHA-pinned"
+tests: "tests/tests/test_api_retry.py, test_issue_payload.py"
+safety: "no data/secrets in repo; heartbeat.txt liveness marker; serial allocation + recovery docs live in the private task repo"
