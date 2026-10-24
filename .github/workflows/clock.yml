@@ -187,13 +187,31 @@ jobs:
               if not result.get("success") or any(not x.get("success") for x in result["result"]):
                   raise RuntimeError("D1 query failed")
               return result["result"][0].get("results", [])
+          KNOWN_STAGES = ("d1 select", "variable reload", "reconcile", "backup read", "backup write", "backup parse")
+          KNOWN_ERROR_TYPES = ("HTTPError", "URLError", "TimeoutError", "RuntimeError", "KeyError", "IndexError", "ValueError", "TypeError", "JSONDecodeError", "OSError", "UnicodeDecodeError")
+          def registry_failure_line(stage, exc):
+              # Public logs: whitelisted stage + whitelisted type name + plain-int status only. Never str(exc).
+              # Exact built-in types only (no subclasses, no coercion), and the whole body is guarded so a hostile exception cannot leak or raise.
+              try:
+                  s = stage if type(stage) is str and stage in KNOWN_STAGES else "unknown"
+                  name = type(exc).__name__
+                  t = name if type(name) is str and name in KNOWN_ERROR_TYPES else "UnexpectedError"
+                  code = exc.code if isinstance(exc, urllib.error.HTTPError) else getattr(exc, "status", None)
+                  n = code if type(code) is int else None
+                  return "registry sync failed: stage=%s type=%s status=%s" % (s, t, "n/a" if n is None else "%d" % n)
+              except Exception:
+                  return "registry sync failed: stage=unknown type=UnexpectedError status=n/a"
+          stage = "d1 select"
           try:
               rows = d1("SELECT * FROM clock_obligations ORDER BY serial")
+              stage = "variable reload"
               current, page = {}, 1
               while True:
                   st, data = api("GET", "/repos/%s/actions/variables?per_page=30&page=%d" % (REPO, page))
                   if st != 200:
-                      raise RuntimeError("variable reload failed")
+                      err = RuntimeError("variable reload failed")
+                      err.status = st
+                      raise err
                   for v in data["variables"]:
                       m = NAME.match(v["name"])
                       if m and "_" in m.group(7):
@@ -204,6 +222,7 @@ jobs:
                   if page * 30 >= data["total_count"]:
                       break
                   page += 1
+              stage = "reconcile"
               if set(current) - {r["id"] for r in rows}:
                   raise RuntimeError("unregistered serial")
               changed_at = now.isoformat().replace("+00:00", "Z")
@@ -221,7 +240,9 @@ jobs:
                   keys = ["code", "details", "status", "variable_name", "due_at", "recurrence", "until_date"]
                   if values != [r[k] for k in keys]:
                       d1("UPDATE clock_obligations SET code=?,details=?,status=?,variable_name=?,due_at=?,recurrence=?,until_date=?,updated_at=? WHERE id=?", values+[changed_at,r["id"]])
+              stage = "d1 select"
               rows = d1("SELECT * FROM clock_obligations ORDER BY serial")
+              stage = "backup parse"
               obligations = []
               for r in rows:
                   r["references"] = json.loads(r.pop("references_json"))
@@ -229,22 +250,29 @@ jobs:
               path = "/repos/%s/contents/registry.json" % TASKS
               # Backup lives on its own branch: main is PR-only (main-guard force-resets direct pushes).
               BACKUP_BRANCH = "registry-backup"
+              stage = "backup read"
               st, old = api("GET", path + "?ref=" + BACKUP_BRANCH)
               if st not in (200,404):
-                  raise RuntimeError("backup read failed")
+                  err = RuntimeError("backup read failed")
+                  err.status = st
+                  raise err
+              stage = "backup parse"
               prior = json.loads(base64.b64decode(old["content"])) if st == 200 else {}
               if prior.get("obligations") != obligations:
+                  stage = "backup write"
                   export = {"schema_version":1,"generated_at":changed_at,"obligations":obligations}
                   payload = {"message":"Update obligation registry backup", "branch":BACKUP_BRANCH, "content":base64.b64encode(json.dumps(export,ensure_ascii=False,indent=2).encode()).decode()}
                   if st == 200:
                       payload["sha"] = old["sha"]
                   st, _ = api("PUT",path,payload)
                   if st not in (200,201):
-                      raise RuntimeError("backup write failed")
+                      err = RuntimeError("backup write failed")
+                      err.status = st
+                      raise err
                   print("registry backup updated")
               print("registry verified")
-          except Exception:
-              print("registry sync failed")
+          except Exception as e:
+              print(registry_failure_line(stage, e))
               raise SystemExit(1)
 
           # hourly dead-man ping: once per UTC hour, only after a fully successful run
