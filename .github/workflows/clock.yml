@@ -43,13 +43,16 @@ jobs:
                            "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"})
               # Retry only reads. A timed-out mutation may already have landed.
               attempts = 3 if method == "GET" else 1
+              retry_statuses = (502, 503, 504)
+              if method == "GET" and path == "/repos/%s/contents/registry.json?ref=registry-backup" % TASKS:
+                  retry_statuses += (500,)
               for attempt in range(attempts):
                   try:
                       with urllib.request.urlopen(req, timeout=30) as r:
                           t = r.read()
                           return r.status, (json.loads(t) if t else None)
                   except urllib.error.HTTPError as e:
-                      if e.code not in (502, 503, 504) or attempt + 1 == attempts:
+                      if e.code not in retry_statuses or attempt + 1 == attempts:
                           return e.code, None
                   except (urllib.error.URLError, TimeoutError):
                       if attempt + 1 == attempts:
