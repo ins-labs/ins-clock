@@ -23,6 +23,7 @@ jobs:
           python3 -u - <<'PY'
           import os, re, json, base64, calendar, time, urllib.request, urllib.error, datetime as dt
           from zoneinfo import ZoneInfo
+          import http.client
 
           PAT = os.environ["PAT"]
           REPO = os.environ["REPO"]
@@ -46,6 +47,9 @@ jobs:
               retry_statuses = (502, 503, 504)
               if method == "GET" and path == "/repos/%s/contents/registry.json?ref=registry-backup" % TASKS:
                   retry_statuses += (500,)
+              # Established transient transport classes on reads (run 42868219739).
+              TRANSIENT_ERRORS = (urllib.error.URLError, TimeoutError, ConnectionResetError, ConnectionAbortedError,
+                                  http.client.RemoteDisconnected, http.client.BadStatusLine, http.client.IncompleteRead)
               for attempt in range(attempts):
                   try:
                       with urllib.request.urlopen(req, timeout=30) as r:
@@ -54,7 +58,9 @@ jobs:
                   except urllib.error.HTTPError as e:
                       if e.code not in retry_statuses or attempt + 1 == attempts:
                           return e.code, None
-                  except (urllib.error.URLError, TimeoutError):
+                  except TRANSIENT_ERRORS as e:
+                      # Fixed-field evidence only: method/class/attempt. No exception text (may carry URL/path/token/newlines).
+                      print("api transient", method, type(e).__name__, "attempt", attempt + 1, "of", attempts)
                       if attempt + 1 == attempts:
                           raise
                   time.sleep(2 ** attempt)
